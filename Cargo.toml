@@ -14,6 +14,8 @@ esp-backtrace = { version = "0.11.0", features = ["esp32", "panic-handler", "exc
 esp-println = { version = "0.9.0", features = ["esp32"] }
 ds323x = "0.5.1"
 critical-section = "1.1.2"
+tea5767 = "0.1.0"
+shared-bus = "0.3.1"
 
 [features]
 default = ["esp32-hal/xtal-40mhz"]

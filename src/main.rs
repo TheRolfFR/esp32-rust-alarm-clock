@@ -1,15 +1,19 @@
 #![no_std]
 #![no_main]
 
-use esp32_hal::{clock::ClockControl, gpio::{OpenDrain, Output}, i2c::I2C, peripherals::Peripherals, prelude::*, Delay, IO};
+use esp32_hal::{clock::ClockControl, gpio::{OpenDrain, Output}, i2c::I2C, peripherals::Peripherals, prelude::*, Delay, IO, reset};
 use esp_backtrace as _;
 use esp_println::println;
-use ds323x::{Ds323x, Rtcc};
 
 // button interrupt
 use esp32_hal::{interrupt, gpio::{Event, Gpio18, Gpio5, Input, PullUp}, peripherals::Interrupt as InterruptSource};
 use core::cell::RefCell;
 use critical_section::Mutex;
+
+// I2C peripherals
+use ds323x::{Ds323x, Rtcc}; // RTC
+use tea5767::defs::*; // Radio
+use shared_bus::BusManagerSimple; // share I2C
 
 static G_BUTTON: Mutex<RefCell<Option<Gpio18<Input<PullUp>>>>> = Mutex::new(RefCell::new(None));
 static G_LED:    Mutex<RefCell<Option<Gpio5<Output<OpenDrain>>>>> = Mutex::new(RefCell::new(None));
@@ -23,9 +27,22 @@ fn main() -> ! {
     let mut delay = Delay::new(&clocks);
     let io = IO::new(peripherals.GPIO, peripherals.IO_MUX);
 
-    let i2c_itf = I2C::new(peripherals.I2C0, io.pins.gpio21, io.pins.gpio22, 400_u32.kHz(), &clocks);
+    let i2c = I2C::new(peripherals.I2C0, io.pins.gpio21, io.pins.gpio22, 400_u32.kHz(), &clocks);
+    let i2c_bus = BusManagerSimple::new(i2c);
 
-    let mut rtc = Ds323x::new_ds3231(i2c_itf);
+    let proxy = i2c_bus.acquire_i2c();
+    let mut radio_tuner = TEA5767::new(
+        proxy,
+        107.0,
+        BandLimits::EuropeUS,
+        SoundMode::Stereo
+    ).or_else(|e| {
+        reset::software_reset();
+        Err(e)
+    }).unwrap();
+    delay.delay_ms(2000u32);
+    let mut rtc = Ds323x::new_ds3231(i2c_bus.acquire_i2c());
+
     let mut led = io.pins.gpio5.into_open_drain_output();
     // init led state
     led.set_low().unwrap();
@@ -41,6 +58,8 @@ fn main() -> ! {
         G_LED.borrow_ref_mut(cs).replace(led);
     });
 
+    // radio
+    radio_tuner.set_frequency(91.2).unwrap();
 
     println!("Hello world!");
     loop {
