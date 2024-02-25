@@ -1,0 +1,20 @@
+[package]
+name = "esp32-rs-alarm-clock"
+version = "0.1.0"
+authors = ["Yann Le Vagueres <yann.lv@live.fr>"]
+edition = "2021"
+license = "MIT OR Apache-2.0"
+
+[profile.release]
+debug = true
+
+[dependencies]
+esp32-hal = "0.18.0"
+esp-backtrace = { version = "0.11.0", features = ["esp32", "panic-handler", "exception-handler", "println"] }
+esp-println = { version = "0.9.0", features = ["esp32"] }
+ds323x = "0.5.1"
+critical-section = "1.1.2"
+
+[features]
+default = ["esp32-hal/xtal-40mhz"]
+
