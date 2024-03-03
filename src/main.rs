@@ -1,7 +1,14 @@
 #![no_std]
 #![no_main]
+#![feature(type_alias_impl_trait)]
 
-use esp32_hal::{clock::ClockControl, gpio::{OpenDrain, Output}, i2c::I2C, peripherals::Peripherals, prelude::*, Delay, IO, reset};
+// Async cool stuff
+use embassy_executor::Spawner;
+use embassy_time::{Duration, Timer};
+use esp32_hal::{self, embassy};
+
+// ESP basic stuff
+use esp32_hal::{clock::ClockControl, gpio::{OpenDrain, Output}, i2c::I2C, peripherals::Peripherals, prelude::*, IO, reset};
 use esp_backtrace as _;
 use esp_println::println;
 
@@ -22,19 +29,34 @@ struct ButtonLed {
 
 static G_BUTTON_LED: Mutex<RefCell<Option<ButtonLed>>> = Mutex::new(RefCell::new(None));
 
-#[entry]
-fn main() -> ! {
+#[embassy_executor::task]
+async fn one_second_task() {
+  let mut count = 0;
+    loop {
+        esp_println::println!("Spawn Task Count: {}", count);
+        count += 1;
+        Timer::after(Duration::from_millis(1_000)).await;
+    }
+}
+
+#[main]
+ async fn main(spawner: Spawner) -> ! {
     let peripherals = Peripherals::take();
     let system = peripherals.SYSTEM.split();
-
     let clocks = ClockControl::max(system.clock_control).freeze();
-    let mut delay = Delay::new(&clocks);
+
+    embassy::init(
+        &clocks,
+        esp32_hal::timer::TimerGroup::new(peripherals.TIMG0, &clocks)
+    );
+    spawner.spawn(one_second_task()).unwrap();
+
     let io = IO::new(peripherals.GPIO, peripherals.IO_MUX);
 
     let i2c = I2C::new(peripherals.I2C0, io.pins.gpio21, io.pins.gpio22, 400_u32.kHz(), &clocks);
     let i2c_bus = BusManagerSimple::new(i2c);
-
     let proxy = i2c_bus.acquire_i2c();
+
     let mut radio_tuner = TEA5767::new(
         proxy,
         107.0,
@@ -44,7 +66,7 @@ fn main() -> ! {
         reset::software_reset();
         Err(e)
     }).unwrap();
-    delay.delay_ms(2000u32);
+    Timer::after(Duration::from_secs(2)).await;
     let mut rtc = Ds323x::new_ds3231(i2c_bus.acquire_i2c());
 
     let mut led = io.pins.gpio5.into_open_drain_output();
@@ -89,7 +111,7 @@ fn main() -> ! {
         println!("Temperature: {}°C", temp);
 
         // sleep a little
-        delay.delay_ms(1000u32);
+        Timer::after(Duration::from_secs(1)).await;
     }
 }
 
