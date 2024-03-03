@@ -6,9 +6,10 @@
 use embassy_executor::Spawner;
 use embassy_time::{Duration, Timer};
 use esp32_hal::{self, embassy};
+use defmt_rtt as _; // global logger
 
 // ESP basic stuff
-use esp32_hal::{clock::ClockControl, gpio::{OpenDrain, Output}, i2c::I2C, peripherals::Peripherals, prelude::*, IO, reset};
+use esp32_hal::{clock::ClockControl, gpio::{OpenDrain, Output}, peripherals::Peripherals, prelude::*, IO, reset};
 use esp_backtrace as _;
 use esp_println::println;
 
@@ -18,26 +19,64 @@ use core::cell::RefCell;
 use critical_section::Mutex;
 
 // I2C peripherals
+use static_cell::StaticCell;
+use esp32_hal::{peripherals::I2C0, i2c::I2C};
+use embassy_sync::blocking_mutex::{raw::NoopRawMutex, NoopMutex};
+use embassy_embedded_hal::shared_bus::blocking::i2c::I2cDevice;
 use ds323x::{Ds323x, Rtcc}; // RTC
 use tea5767::defs::*; // Radio
-use shared_bus::BusManagerSimple; // share I2C
+// type definition abstraction
+type I2CRawMutex = NoopRawMutex;
+type I2cDeviceESP<T> = I2cDevice<'static,I2CRawMutex, I2C<'static, T>>;
 
 struct ButtonLed {
     button: Gpio18<Input<PullUp>>,
     led: Gpio5<Output<OpenDrain>>
 }
-
 static G_BUTTON_LED: Mutex<RefCell<Option<ButtonLed>>> = Mutex::new(RefCell::new(None));
 
+
+/* ========================== *\
+|            TASKS             |
+\* ========================== */
+
+
 #[embassy_executor::task]
-async fn one_second_task() {
-  let mut count = 0;
+async fn rtc_task(con: I2cDeviceESP<I2C0>) -> ! {
+    let mut rtc = Ds323x::new_ds3231(con);
+
     loop {
-        esp_println::println!("Spawn Task Count: {}", count);
-        count += 1;
+        let time = rtc.time().unwrap();
+        println!("Time: {}", time);
+        let temp = rtc.temperature().unwrap();
+        println!("Temperature: {}°C", temp);
+
         Timer::after(Duration::from_millis(1_000)).await;
     }
 }
+
+#[embassy_executor::task]
+async fn radio_task(con: I2cDeviceESP<I2C0>) {
+    let mut radio_tuner = TEA5767::new(
+        con,
+        107.0,
+        BandLimits::EuropeUS,
+        SoundMode::Stereo
+    ).or_else(|e| {
+        reset::software_reset();
+        Err(e)
+    }).unwrap();
+
+    // radio
+    radio_tuner.set_frequency(91.2).unwrap();
+    println!("Set frequency to {}FM", radio_tuner.get_frequency().unwrap());
+}
+
+
+/* ========================== *\
+|             MAIN             |
+\* ========================== */
+
 
 #[main]
  async fn main(spawner: Spawner) -> ! {
@@ -49,32 +88,25 @@ async fn one_second_task() {
         &clocks,
         esp32_hal::timer::TimerGroup::new(peripherals.TIMG0, &clocks)
     );
-    spawner.spawn(one_second_task()).unwrap();
 
     let io = IO::new(peripherals.GPIO, peripherals.IO_MUX);
+    let p = io.pins;
 
-    let i2c = I2C::new(peripherals.I2C0, io.pins.gpio21, io.pins.gpio22, 400_u32.kHz(), &clocks);
-    let i2c_bus = BusManagerSimple::new(i2c);
-    let proxy = i2c_bus.acquire_i2c();
+    // I2C setup
+    let sda = p.gpio21;
+    let scl = p.gpio22;
+    let i2c = esp32_hal::i2c::I2C::new(peripherals.I2C0, sda, scl, 400_u32.kHz(), &clocks);
+    static I2C_BUS: StaticCell<NoopMutex<RefCell<I2C<'static, I2C0>>>> = StaticCell::new();
+    let i2c_bus = I2C_BUS.init(NoopMutex::new(RefCell::new(i2c)));
+    let rtc_device = I2cDevice::new(i2c_bus);
+    let radio_device = I2cDevice::new(i2c_bus);
 
-    let mut radio_tuner = TEA5767::new(
-        proxy,
-        107.0,
-        BandLimits::EuropeUS,
-        SoundMode::Stereo
-    ).or_else(|e| {
-        reset::software_reset();
-        Err(e)
-    }).unwrap();
-    Timer::after(Duration::from_secs(2)).await;
-    let mut rtc = Ds323x::new_ds3231(i2c_bus.acquire_i2c());
-
-    let mut led = io.pins.gpio5.into_open_drain_output();
-    // init led state
+    // led setup
+    let mut led = p.gpio5.into_open_drain_output();
     led.set_low().unwrap();
 
     // button and interrupt setup
-    let mut button = io.pins.gpio18.into_pull_up_input();
+    let mut button = p.gpio18.into_pull_up_input();
     button.listen(Event::AnyEdge);
     interrupt::enable(InterruptSource::GPIO, interrupt::Priority::Priority3).unwrap();
 
@@ -86,34 +118,22 @@ async fn one_second_task() {
         });
     });
 
-    // radio
-    radio_tuner.set_frequency(91.2).unwrap();
+    spawner.spawn(radio_task(radio_device)).unwrap();
+    spawner.spawn(rtc_task(rtc_device)).unwrap();
 
     println!("Hello world!");
     loop {
         println!("Loop...");
 
-        // BUTTON
-        // let state = button.is_low().unwrap();
-        // println!("State : {}", &state);
-
-        // LED
-        // led.set_state(state.into()).unwrap();
-        // led.set_high().unwrap();
-        // delay.delay_ms(1000u32);
-        // led.set_low().unwrap();
-        // delay.delay_ms(1000u32);
-
-        // RTC
-        let time = rtc.time().unwrap();
-        println!("Time: {}", time);
-        let temp = rtc.temperature().unwrap();
-        println!("Temperature: {}°C", temp);
-
         // sleep a little
         Timer::after(Duration::from_secs(1)).await;
     }
 }
+
+
+/* ========================== *\
+|           INTERRUPT          |
+\* ========================== */
 
 #[interrupt]
 fn GPIO() {
