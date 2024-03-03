@@ -15,8 +15,12 @@ use ds323x::{Ds323x, Rtcc}; // RTC
 use tea5767::defs::*; // Radio
 use shared_bus::BusManagerSimple; // share I2C
 
-static G_BUTTON: Mutex<RefCell<Option<Gpio18<Input<PullUp>>>>> = Mutex::new(RefCell::new(None));
-static G_LED:    Mutex<RefCell<Option<Gpio5<Output<OpenDrain>>>>> = Mutex::new(RefCell::new(None));
+struct ButtonLed {
+    button: Gpio18<Input<PullUp>>,
+    led: Gpio5<Output<OpenDrain>>
+}
+
+static G_BUTTON_LED: Mutex<RefCell<Option<ButtonLed>>> = Mutex::new(RefCell::new(None));
 
 #[entry]
 fn main() -> ! {
@@ -54,8 +58,10 @@ fn main() -> ! {
 
     // consume button into mutex
     critical_section::with(|cs| {
-        G_BUTTON.borrow_ref_mut(cs).replace(button);
-        G_LED.borrow_ref_mut(cs).replace(led);
+        G_BUTTON_LED.borrow_ref_mut(cs).replace(ButtonLed {
+            button,
+            led
+        });
     });
 
     // radio
@@ -90,23 +96,18 @@ fn main() -> ! {
 #[interrupt]
 fn GPIO() {
     critical_section::with(|cs| {
-        let mut btn = G_BUTTON
+        let mut bl_ref = G_BUTTON_LED
             .borrow_ref_mut(cs);
 
-        let val = btn
+        let ButtonLed {button, led} = bl_ref
             .as_mut()
             .unwrap();
 
-        let state = val.is_low().unwrap();
+        let state = button.is_low().unwrap();
         println!("State : {}", &state);
 
-        G_LED
-            .borrow_ref_mut(cs)
-            .as_mut()
-            .unwrap()
-            .set_state(state.into())
-            .unwrap();
+        led.set_state(state.into()).unwrap();
 
-        val.clear_interrupt();
+        button.clear_interrupt();
     });
 }
