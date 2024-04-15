@@ -9,7 +9,7 @@ license = "MIT OR Apache-2.0"
 debug = true
 
 [dependencies]
-esp32-hal = { version = "0.18.0", features = ["embassy", "embassy-time-timg0", "embassy-executor-thread"] }
+esp32-hal = { version = "0.18.0", features = ["embassy", "embassy-time-timg0", "embassy-executor-thread", "async"] }
 esp-backtrace = { version = "0.11.0", features = ["esp32", "panic-handler", "exception-handler", "println"] }
 esp-println = { version = "0.9.0", features = ["esp32"] }
 ds323x = "0.5.1"
@@ -22,6 +22,7 @@ defmt-rtt = "0.4.0"
 embassy-embedded-hal = "0.1.0"
 embassy-sync = { version = "0.5.0", features = ["defmt"] }
 static_cell = "2.0.0"
+embedded-hal-async = "1.0.0"
 
 [features]
 default = ["esp32-hal/xtal-40mhz"]

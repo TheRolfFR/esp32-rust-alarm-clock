@@ -12,11 +12,11 @@ use defmt_rtt as _; // global logger
 use esp32_hal::{clock::ClockControl, gpio::{OpenDrain, Output}, peripherals::Peripherals, prelude::*, IO, reset};
 use esp_backtrace as _;
 use esp_println::println;
+use core::cell::RefCell;
 
 // button interrupt
-use esp32_hal::{interrupt, gpio::{Event, Gpio18, Gpio5, Input, PullUp}, peripherals::Interrupt as InterruptSource};
-use core::cell::RefCell;
-use critical_section::Mutex;
+use esp32_hal::gpio::{Gpio18, Gpio5, Input, PullUp};
+use embedded_hal_async::digital::Wait;
 
 // I2C peripherals
 use static_cell::StaticCell;
@@ -29,13 +29,6 @@ use tea5767::defs::*; // Radio
 type I2CRawMutex = NoopRawMutex;
 type I2cDeviceESP<T> = I2cDevice<'static,I2CRawMutex, I2C<'static, T>>;
 
-struct ButtonLed {
-    button: Gpio18<Input<PullUp>>,
-    led: Gpio5<Output<OpenDrain>>
-}
-static G_BUTTON_LED: Mutex<RefCell<Option<ButtonLed>>> = Mutex::new(RefCell::new(None));
-
-
 /* ========================== *\
 |            TASKS             |
 \* ========================== */
@@ -43,6 +36,7 @@ static G_BUTTON_LED: Mutex<RefCell<Option<ButtonLed>>> = Mutex::new(RefCell::new
 
 #[embassy_executor::task]
 async fn rtc_task(con: I2cDeviceESP<I2C0>) -> ! {
+    // no async implem for DS232x with latest embedded hal
     let mut rtc = Ds323x::new_ds3231(con);
 
     loop {
@@ -105,51 +99,28 @@ async fn radio_task(con: I2cDeviceESP<I2C0>) {
     let mut led = p.gpio5.into_open_drain_output();
     led.set_low().unwrap();
 
-    // button and interrupt setup
-    let mut button = p.gpio18.into_pull_up_input();
-    button.listen(Event::AnyEdge);
-    interrupt::enable(InterruptSource::GPIO, interrupt::Priority::Priority3).unwrap();
-
-    // consume button into mutex
-    critical_section::with(|cs| {
-        G_BUTTON_LED.borrow_ref_mut(cs).replace(ButtonLed {
-            button,
-            led
-        });
-    });
+    // button setup
+    let button = p.gpio18.into_pull_up_input();
 
     spawner.spawn(radio_task(radio_device)).unwrap();
     spawner.spawn(rtc_task(rtc_device)).unwrap();
 
-    println!("Hello world!");
-    loop {
-        println!("Loop...");
-
-        // sleep a little
-        Timer::after(Duration::from_secs(1)).await;
-    }
+    btnled_task(button, led).await
 }
 
 
 /* ========================== *\
-|           INTERRUPT          |
+|          BUTTON TASK         |
 \* ========================== */
 
-#[interrupt]
-fn GPIO() {
-    critical_section::with(|cs| {
-        let mut bl_ref = G_BUTTON_LED
-            .borrow_ref_mut(cs);
 
-        let ButtonLed {button, led} = bl_ref
-            .as_mut()
-            .unwrap();
+async fn btnled_task(mut button: Gpio18<Input<PullUp>>, mut led: Gpio5<Output<OpenDrain>>) -> ! {
+    loop {
+        if button.wait_for_any_edge().await.is_ok() {
+            let state = button.is_low().unwrap();
+            println!("State : {}", &state);
 
-        let state = button.is_low().unwrap();
-        println!("State : {}", &state);
-
-        led.set_state(state.into()).unwrap();
-
-        button.clear_interrupt();
-    });
+            led.set_state(state.into()).unwrap();
+        }
+    }
 }
